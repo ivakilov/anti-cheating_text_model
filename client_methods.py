@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score
 import torch
 from torch.utils.data import Dataset, TensorDataset
 
-from joint_ml import Metric
+from joint_ml._metric import Metric
 
 
 GET_DATASET_RETURN_TYPE = Union[
@@ -191,3 +191,4 @@ def get_prediction(model: torch.nn.Module, dataset_path: str) -> list:
     X = df.values
     predictions = model.model.predict(X)
     return predictions.tolist()
+
