@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score
 import torch
 from torch.utils.data import Dataset, TensorDataset
 
-from joint_ml._metric import Metric
+from joint_ml import Metric
 
 
 GET_DATASET_RETURN_TYPE = Union[
@@ -17,9 +17,14 @@ GET_DATASET_RETURN_TYPE = Union[
 
 
 class RandomForestWrapper(torch.nn.Module):
-    def __init__(self, **model_params):
+    def __init__(self, max_depth=10, min_samples_split=10, n_estimators=300, random_state=21):
         super().__init__()
-        self.model = RandomForestClassifier(**model_params)
+        self.model = RandomForestClassifier(
+            max_depth=max_depth,
+            min_samples_split=min_samples_split,
+            n_estimators=n_estimators,
+            random_state=random_state
+        )
         
     def forward(self, x):
         if isinstance(x, torch.Tensor):
@@ -27,18 +32,35 @@ class RandomForestWrapper(torch.nn.Module):
         return torch.tensor(self.model.predict(x))
 
 
-def load_model(**kwargs) -> torch.nn.Module:
-    model_params = {
-        'max_depth': 10,
-        'min_samples_split': 10,
-        'n_estimators': 300,
-        'random_state': 21,
-        **kwargs
-    }
-    return RandomForestWrapper(**model_params)
+def load_model(max_depth=10, min_samples_split=10, n_estimators=300, random_state=21) -> torch.nn.Module:
+    """
+    Метод для генерации модели. На вход будут подаваться параметры, указанные на сервисе как Model Parameters.
+
+    :param max_depth: Максимальная глубина дерева
+    :param min_samples_split: Минимальное количество samples для разделения узла
+    :param n_estimators: Количество деревьев в лесу
+    :param random_state: Seed для воспроизводимости
+    :return: Модель RandomForest
+    """
+    return RandomForestWrapper(
+        max_depth=max_depth,
+        min_samples_split=min_samples_split,
+        n_estimators=n_estimators,
+        random_state=random_state
+    )
 
 
-def get_dataset(dataset_path: str, with_split: bool, **kwargs) -> GET_DATASET_RETURN_TYPE:
+def get_dataset(dataset_path: str, with_split: bool, test_size=0.2, val_size=0.2, random_state=21) -> GET_DATASET_RETURN_TYPE:
+    """
+    Метод для чтения, предобработки и разбития датасета.
+
+    :param dataset_path: путь до csv-файла с датасетом
+    :param with_split: параметр разделения набор данных
+    :param test_size: доля тестовой выборки
+    :param val_size: доля валидационной выборки (от оставшихся после теста данных)
+    :param random_state: Seed для воспроизводимости
+    :return: Разбитые или неразбитые наборы данных
+    """
     df = pd.read_csv(dataset_path)
     
     # Предполагаем, что последний столбец - целевая переменная
@@ -46,11 +68,15 @@ def get_dataset(dataset_path: str, with_split: bool, **kwargs) -> GET_DATASET_RE
     y = df.iloc[:, -1].values
     
     if with_split:
-        X_train, X_temp, y_train, y_temp = train_test_split(
-            X, y, test_size=0.3, random_state=21
+        # Сначала разделяем на train+val и test
+        X_train_val, X_test, y_train_val, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state
         )
-        X_val, X_test, y_val, y_test = train_test_split(
-            X_temp, y_temp, test_size=0.5, random_state=21
+        
+        # Затем разделяем train+val на train и validation
+        val_ratio = val_size / (1 - test_size)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train_val, y_train_val, test_size=val_ratio, random_state=random_state
         )
         
         train_dataset = TensorDataset(
@@ -75,11 +101,15 @@ def get_dataset(dataset_path: str, with_split: bool, **kwargs) -> GET_DATASET_RE
         return (dataset,)
 
 
-def train(model: torch.nn.Module, 
-          train_set: Dataset, 
-          valid_set: Dataset = None, 
-          **kwargs) -> tuple[list[Metric], torch.nn.Module]:
+def train(model: torch.nn.Module, train_set: Dataset, valid_set: Dataset = None) -> tuple[list[Metric], torch.nn.Module]:
+    """
+    Метод для тренировки модели.
     
+    :param model: модель для обучения
+    :param train_set: тренировочная выборка
+    :param valid_set: валидационная выборка (опционально)
+    :return: метрики и обученная модель
+    """
     # Извлекаем данные из Dataset
     X_train, y_train = zip(*[(x, y) for x, y in train_set])
     X_train = torch.stack(X_train).numpy()
@@ -120,11 +150,15 @@ def train(model: torch.nn.Module,
     return metrics, model
 
 
-def test(model: torch.nn.Module, 
-         test_set: Dataset, 
-         return_output: bool = False,
-         **kwargs) -> tuple[list[Metric]] | tuple[list[Metric], list]:
+def test(model: torch.nn.Module, test_set: Dataset, return_output: bool = False) -> tuple[list[Metric]] | tuple[list[Metric], list]:
+    """
+    Метод для тестировки модели на данных.
     
+    :param model: модель для тестирования
+    :param test_set: тестовая выборка
+    :param return_output: возврат результатов прогноза
+    :return: метрики и (опционально) предсказания
+    """
     X_test, y_test = zip(*[(x, y) for x, y in test_set])
     X_test = torch.stack(X_test).numpy()
     y_test = torch.stack(y_test).numpy()
@@ -145,7 +179,14 @@ def test(model: torch.nn.Module,
     return (metrics,)
 
 
-def get_prediction(model: torch.nn.Module, dataset_path: str, **kwargs) -> list:
+def get_prediction(model: torch.nn.Module, dataset_path: str) -> list:
+    """
+    Метод для получения предсказаний модели на данных пользователя.
+    
+    :param model: обученная модель
+    :param dataset_path: путь до данных для предсказания
+    :return: список предсказаний
+    """
     df = pd.read_csv(dataset_path)
     X = df.values
     predictions = model.model.predict(X)
